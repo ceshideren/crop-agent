@@ -95,6 +95,17 @@ class MemoryStore:
                 out.append((i, d, m or {}))
         return out
 
+    def update_meta(self, where: dict, updates: dict) -> int:
+        """按元数据等值匹配原地更新（如改分类），返回命中条数。"""
+        n = 0
+        for i, m in enumerate(self._metadatas):
+            meta = m or {}
+            if _meta_match(meta, where):
+                meta.update(updates)
+                self._metadatas[i] = meta
+                n += 1
+        return n
+
 
 class ChromaStore:
     """ChromaDB 持久化向量库。"""
@@ -160,6 +171,24 @@ class ChromaStore:
         ):
             out.append((cid, doc, meta or {}))
         return out
+
+    def update_meta(self, where: dict, updates: dict) -> int:
+        """按元数据等值匹配更新（如改分类），返回命中条数。"""
+        try:
+            res = self._col.get(where=where, include=["metadatas"])
+        except Exception:
+            return 0
+        ids = res.get("ids", [])
+        metas = res.get("metadatas", [])
+        if not ids:
+            return 0
+        new_metas = []
+        for m in metas:
+            merged = dict(m or {})
+            merged.update(updates)
+            new_metas.append(merged)
+        self._col.update(ids=ids, metadatas=new_metas)
+        return len(ids)
 
 
 def get_vector_store(persist_dir: Optional[str] = None):

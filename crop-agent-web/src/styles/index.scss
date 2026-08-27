@@ -254,6 +254,13 @@ body {
   }
 }
 
+/* ---------- el-message 次数角标 ----------
+   grouping 会把相同提示合并为单条并显示 ×N 角标；
+   这里全局隐藏角标，只保留合并去重效果（提示挂载在 body，须用全局样式） */
+.el-message .el-message__badge {
+  display: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -348,6 +348,23 @@ class CropAgent:
         finally:
             db.close()
 
+    def update_doc_category(self, doc_id: str, category: str) -> dict:
+        """修改文档分类：同步向量 chunk 元数据（检索过滤源）与 DB 行，不重新嵌入。"""
+        from db.models import KnowledgeMeta
+
+        # 先同步向量元数据，保证检索测试的分类过滤即时生效
+        self.retriever.store.update_meta({"doc_id": doc_id}, {"category": category})
+        db = self.db_factory()
+        try:
+            row = db.get(KnowledgeMeta, doc_id)
+            if row is None:
+                raise KeyError(f"文档不存在：{doc_id}")
+            row.category = category
+            db.commit()
+        finally:
+            db.close()
+        return {"doc_id": doc_id, "category": category}
+
     def get_doc_chunks(self, doc_id: str) -> list:
         """按 doc_id 读取该文档全部 chunk：[(chunk_id, text)]（按 chunk 序号排序）。"""
         rows = self.retriever.store.get_by_meta({"doc_id": doc_id})

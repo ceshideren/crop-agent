@@ -24,6 +24,32 @@ def _read_text(path: str) -> str:
         return f.read()
 
 
+# 知识库支持的文档类型（md/txt 直读；docx/pptx 解析二进制提取文本）
+_SUPPORTED_EXTS = (".md", ".txt", ".docx", ".pptx")
+_TEXT_EXTS = (".md", ".txt")
+_BINARY_EXTS = (".docx", ".pptx")
+# file_parser 解析失败/缺库时的占位前缀，命中即视为无法解析（禁止入索引）
+_PARSE_FAIL_PREFIXES = ("[文件解析失败", "[未安装", "[暂不支持", "未提取到文本")
+
+
+def _read_document(path: str) -> str:
+    """按扩展名读取文档文本；无法解析时抛 ValueError。"""
+    fn = os.path.basename(path)
+    ext = os.path.splitext(fn)[1].lower()
+    if ext in _TEXT_EXTS:
+        return _read_text(path)
+    if ext in _BINARY_EXTS:
+        from services.file_parser import extract_file_text
+
+        with open(path, "rb") as f:
+            data = f.read()
+        text = extract_file_text(fn, data)
+        if text.startswith(_PARSE_FAIL_PREFIXES):
+            raise ValueError(f"无法解析文档 {fn}：{text}")
+        return text
+    raise ValueError(f"不支持的文件类型：{fn}")
+
+
 def _file_stats(path: str) -> tuple:
     """返回 (file_size, updated_at_naive_utc)；文件不可读时返回默认值。"""
     try:
@@ -35,8 +61,8 @@ def _file_stats(path: str) -> tuple:
 
 
 def load_document(path: str) -> dict:
-    """读取单个 md/txt 文档 → doc dict（供上传 / 单文档重建复用）。"""
-    text = _read_text(path)
+    """读取单个 md/txt/docx/pptx 文档 → doc dict（供上传 / 单文档重建复用）。"""
+    text = _read_document(path)
     fn = os.path.basename(path)
     return {
         "path": path,
@@ -47,17 +73,17 @@ def load_document(path: str) -> dict:
 
 
 def load_documents(knowledge_dir: str) -> List[dict]:
-    """遍历 knowledge/ 目录，读取 md/txt 文档。"""
+    """遍历 knowledge/ 目录，读取 md/txt/docx/pptx 文档。"""
     docs: List[dict] = []
     if not os.path.isdir(knowledge_dir):
         return docs
     for root, _, files in os.walk(knowledge_dir):
         for fn in sorted(files):
-            if not fn.lower().endswith((".md", ".txt")):
+            if not fn.lower().endswith(_SUPPORTED_EXTS):
                 continue
             path = os.path.join(root, fn)
             try:
-                text = _read_text(path)
+                text = _read_document(path)
             except Exception:
                 continue
             docs.append(

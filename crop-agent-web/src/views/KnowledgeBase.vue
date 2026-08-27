@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { api } from '@/api'
 import { highlightHtml } from '@/utils/highlight'
 import { formatDate } from '@/utils/time'
@@ -32,6 +33,11 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+function extOf(name?: string): string {
+  const i = (name || '').lastIndexOf('.')
+  return i >= 0 ? (name || '').slice(i + 1).toLowerCase() : ''
+}
+
 /* ---------------- 状态 ---------------- */
 
 const docs = ref<KnowledgeDoc[]>([])
@@ -52,6 +58,18 @@ const busyReindex = ref<Set<string>>(new Set())
 const batchBusy = ref(false)
 const highlightDocIds = ref<Set<string>>(new Set())
 const fileInput = ref<HTMLInputElement>()
+const router = useRouter()
+
+// 文档管理：前端分页与分类筛选（保持列表接口不变）
+const page = ref(1)
+const pageSize = ref(10)
+const catFilter = ref('')
+const tableRef = ref<{ clearSelection: () => void } | null>(null)
+
+// 修改分类弹窗
+const catEditVisible = ref(false)
+const catEditDoc = ref<KnowledgeDoc | null>(null)
+const catEditValue = ref('')
 
 // 抽屉
 const previewVisible = ref(false)
@@ -92,6 +110,62 @@ async function loadDocs() {
     kbMeta.value = data.meta || kbMeta.value
   } catch {
     ElMessage.error('加载知识库失败')
+  }
+}
+
+/* ---------------- 文档管理：分页与筛选 ---------------- */
+
+const filteredDocs = computed(() => {
+  const list = docs.value
+  if (!catFilter.value) return list
+  if (catFilter.value === 'other') {
+    return list.filter((d) => !KNOWN_CATEGORIES.includes(d.category || ''))
+  }
+  return list.filter((d) => d.category === catFilter.value)
+})
+
+const pagedDocs = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return filteredDocs.value.slice(start, start + pageSize.value)
+})
+
+watch([filteredDocs, pageSize], () => {
+  const max = Math.max(1, Math.ceil(filteredDocs.value.length / pageSize.value))
+  if (page.value > max) page.value = max
+})
+
+function onCatFilterChange() {
+  page.value = 1
+}
+
+function onDownload(row: KnowledgeDoc) {
+  api.downloadKnowledge(row.doc_id)
+}
+
+/* ---------------- 修改分类 ---------------- */
+
+function openCatEdit(row: KnowledgeDoc) {
+  catEditDoc.value = row
+  catEditValue.value = KNOWN_CATEGORIES.includes(row.category || '')
+    ? (row.category as string)
+    : 'other'
+  catEditVisible.value = true
+}
+
+async function saveCatEdit() {
+  if (!catEditDoc.value) return
+  const doc = catEditDoc.value
+  try {
+    const res = await api.updateKnowledgeCategory(doc.doc_id, catEditValue.value)
+    if (res.data.code !== 200) {
+      ElMessage.error(res.data.message || '修改分类失败')
+      return
+    }
+    ElMessage.success(`已将「${doc.title}」分类改为 ${catInfo(catEditValue.value).label}`)
+    catEditVisible.value = false
+    await loadDocs()
+  } catch {
+    ElMessage.error('修改分类失败')
   }
 }
 
@@ -204,6 +278,7 @@ async function onBatchDelete() {
       ElMessage.error(res.data.message || '批量删除失败')
     }
     selectedRows.value = []
+    tableRef.value?.clearSelection()
     await loadDocs()
   } catch {
     ElMessage.error('批量删除失败')
@@ -225,6 +300,7 @@ async function onBatchReindex() {
       ElMessage.error(res.data.message || '批量重建失败')
     }
     selectedRows.value = []
+    tableRef.value?.clearSelection()
     await loadDocs()
   } catch {
     ElMessage.error('批量重建失败')
@@ -236,6 +312,15 @@ async function onBatchReindex() {
 /* ---------------- 抽屉：预览 / 片段 ---------------- */
 
 async function openPreview(row: KnowledgeDoc) {
+  // Word/PPT 在新标签页预览；md/txt 沿用抽屉
+  const ext = extOf(row.file_name || row.source)
+  if (ext === 'docx' || ext === 'pptx') {
+    window.open(
+      router.resolve({ name: 'knowledge-preview', params: { docId: row.doc_id } }).href,
+      '_blank',
+    )
+    return
+  }
   preview.value = { title: row.title, category: row.category || '', content: '', loading: true }
   previewVisible.value = true
   try {
@@ -304,7 +389,7 @@ async function onUpload(ev: Event) {
     })
     upload.value.phase = 'parsing'
     if (res.data.code !== 200) {
-      ElMessage.error(res.data.message || '上传失败，仅支持 .md / .txt')
+      ElMessage.error(res.data.message || '上传失败，仅支持 .md / .txt / .docx / .pptx')
     } else {
       ElMessage.success(
         `已入库 ${res.data.data.filename}，生成 ${res.data.data.chunks} 个片段`,
@@ -323,7 +408,7 @@ async function onUpload(ev: Event) {
       }
     }
   } catch {
-    ElMessage.error('上传失败，仅支持 .md / .txt')
+    ElMessage.error('上传失败，仅支持 .md / .txt / .docx / .pptx')
   } finally {
     upload.value.active = false
     input.value = ''
@@ -332,18 +417,6 @@ async function onUpload(ev: Event) {
 
 function rowClassName({ row }: { row: KnowledgeDoc }) {
   return highlightDocIds.value.has(row.doc_id) ? 'row-flash' : ''
-}
-
-const catFilters = [
-  { text: '作物', value: 'crops' },
-  { text: '病害', value: 'diseases' },
-  { text: '技术', value: 'techniques' },
-  { text: '其他', value: 'other' },
-]
-
-function filterCategory(value: string, row: KnowledgeDoc) {
-  if (value === 'other') return !KNOWN_CATEGORIES.includes(row.category || '')
-  return row.category === value
 }
 
 onMounted(loadDocs)
@@ -367,7 +440,7 @@ onMounted(loadDocs)
           <input
             ref="fileInput"
             type="file"
-            accept=".md,.txt"
+            accept=".md,.txt,.docx,.pptx"
             hidden
             @change="onUpload"
           />
@@ -549,10 +622,28 @@ onMounted(loadDocs)
 
         <!-- 文档表格 -->
         <div v-else class="table-card card">
+          <div class="table-toolbar">
+            <el-select
+              v-model="catFilter"
+              class="cat-select"
+              placeholder="全部分类"
+              clearable
+              @change="onCatFilterChange"
+            >
+              <el-option label="全部分类" value="" />
+              <el-option label="作物" value="crops" />
+              <el-option label="病害" value="diseases" />
+              <el-option label="技术" value="techniques" />
+              <el-option label="其他" value="other" />
+            </el-select>
+          </div>
           <div class="table-scroll">
             <el-table
-              :data="docs"
+              ref="tableRef"
+              :data="pagedDocs"
               style="width: 100%"
+              row-key="doc_id"
+              :reserve-selection="true"
               :row-class-name="rowClassName"
               @selection-change="onSelectionChange"
             >
@@ -562,24 +653,18 @@ onMounted(loadDocs)
                   <span class="doc-title" @click="openPreview(row)">{{ row.title }}</span>
                 </template>
               </el-table-column>
-              <el-table-column
-                prop="category"
-                label="分类"
-                width="96"
-                :filters="catFilters"
-                :filter-method="filterCategory"
-              >
+              <el-table-column prop="category" label="分类" width="96">
                 <template #default="{ row }">
                   <el-tag class="cat-tag" :class="catInfo(row.category).cls" size="small" effect="light">
                     {{ catInfo(row.category).label }}
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column prop="doc_id" label="文档 ID" width="110">
+              <!-- <el-table-column prop="doc_id" label="文档 ID" width="110">
                 <template #default="{ row }">
                   <span class="num doc-id">{{ row.doc_id }}</span>
                 </template>
-              </el-table-column>
+              </el-table-column> -->
               <el-table-column prop="chunk_count" label="片段数" width="90" align="center">
                 <template #default="{ row }">
                   <el-tag
@@ -642,9 +727,12 @@ onMounted(loadDocs)
                   <span class="num">{{ formatSize(row.file_size) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="210" fixed="right">
+              <el-table-column label="操作" width="380" fixed="right">
                 <template #default="{ row }">
                   <span class="row-actions">
+                    <el-button size="small" text type="primary" @click="onDownload(row)">
+                      <el-icon><Download /></el-icon>&nbsp;下载
+                    </el-button>
                     <el-button size="small" text type="primary" @click="openPreview(row)">
                       预览
                     </el-button>
@@ -656,6 +744,9 @@ onMounted(loadDocs)
                       @click="onReindex(row)"
                     >
                       重建索引
+                    </el-button>
+                    <el-button size="small" text type="primary" @click="openCatEdit(row)">
+                      <el-icon><EditPen /></el-icon>&nbsp;改分类
                     </el-button>
                     <el-popconfirm
                       title="确认删除该文档？删除后不可恢复"
@@ -671,6 +762,15 @@ onMounted(loadDocs)
                 </template>
               </el-table-column>
             </el-table>
+          </div>
+          <div class="table-pager">
+            <el-pagination
+              v-model:current-page="page"
+              v-model:page-size="pageSize"
+              :total="filteredDocs.length"
+              :page-sizes="[10, 20, 50]"
+              layout="total, sizes, prev, pager, next, jumper"
+            />
           </div>
         </div>
       </el-tab-pane>
@@ -729,12 +829,30 @@ onMounted(loadDocs)
         </div>
       </div>
     </el-drawer>
+
+    <!-- 修改分类弹窗 -->
+    <el-dialog
+      v-model="catEditVisible"
+      :title="catEditDoc ? `修改分类 · ${catEditDoc.title}` : '修改分类'"
+      width="360px"
+    >
+      <el-select v-model="catEditValue" style="width: 100%">
+        <el-option label="作物" value="crops" />
+        <el-option label="病害" value="diseases" />
+        <el-option label="技术" value="techniques" />
+        <el-option label="其他" value="other" />
+      </el-select>
+      <template #footer>
+        <el-button @click="catEditVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveCatEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped lang="scss">
 .kb-view {
-  max-width: 1000px;
+  max-width: 1240px;
   margin: 0 auto;
   padding: 24px;
 }
@@ -1062,6 +1180,18 @@ onMounted(loadDocs)
   padding: 4px 8px;
 }
 
+.table-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 8px 0;
+}
+
+.table-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 8px 8px;
+}
+
 .table-scroll {
   overflow-x: auto;
 }
@@ -1105,19 +1235,13 @@ onMounted(loadDocs)
   padding: 0 4px;
 }
 
-/* 行操作按钮：hover 行才显示 */
+/* 行操作按钮：常显（避免删除等按钮被误以为缺失） */
 .row-actions {
   white-space: nowrap;
-  opacity: 0;
-  transition: opacity 150ms var(--ease);
 
   :deep(.el-button + .el-button) {
     margin-left: 8px;
   }
-}
-
-:deep(.el-table__row:hover) .row-actions {
-  opacity: 1;
 }
 
 /* 新增行高亮闪烁（上传完成后 2 秒） */

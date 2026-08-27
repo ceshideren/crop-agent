@@ -185,6 +185,158 @@ with TestClient(main.app) as client:
         if os.path.isfile(tmp_path):
             os.remove(tmp_path)
 
+    # ---- 文档管理：修改分类 + 与检索测试同步（需求3） ----
+    cat_path = os.path.join(_SMOKE_KB, "冒烟测试草莓.md")
+    with open(cat_path, "w", encoding="utf-8") as f:
+        f.write("# 冒烟测试草莓\n\n草莓种植要点关键词：草莓喜光、适宜温度 15-25℃，需注意白粉病防治。\n" * 3)
+    with open(cat_path, "rb") as f:
+        r = client.post(
+            "/api/knowledge/upload",
+            files={"file": ("冒烟测试草莓.md", f, "text/markdown")},
+        )
+    cat_up = r.json()
+    ok &= check(
+        "  上传分类测试文档",
+        cat_up.get("code") == 200 and cat_up["data"].get("doc_id"),
+        repr(cat_up),
+    )
+    cat_id = cat_up["data"]["doc_id"]
+
+    r = client.patch(f"/api/knowledge/{cat_id}", json={"category": "crops"})
+    ok &= check(
+        "PATCH /{id} 修改分类",
+        r.json().get("code") == 200 and r.json()["data"]["category"] == "crops",
+        repr(r.json()),
+    )
+
+    def _find_doc(q, category=""):
+        params = {"q": q}
+        if category:
+            params["category"] = category
+        return client.get("/api/knowledge/search", params=params).json()["data"]["results"]
+
+    ok &= check(
+        "  改分类后无过滤检索命中",
+        any(d["doc_id"] == cat_id for d in _find_doc("草莓种植要点")),
+    )
+    ok &= check(
+        "  改分类后按新分类 crops 命中",
+        any(d["doc_id"] == cat_id and d["category"] == "crops" for d in _find_doc("草莓种植要点", "crops")),
+    )
+    ok &= check(
+        "  改分类后按旧分类 diseases 不命中（向量元数据已同步）",
+        all(d["doc_id"] != cat_id for d in _find_doc("草莓种植要点", "diseases")),
+    )
+    list_doc = next(
+        (d for d in client.get("/api/knowledge").json()["data"]["docs"] if d["doc_id"] == cat_id),
+        None,
+    )
+    ok &= check(
+        "  列表分类已更新为 crops",
+        bool(list_doc) and list_doc["category"] == "crops",
+        repr(list_doc),
+    )
+
+    r = client.patch(f"/api/knowledge/{cat_id}", json={"category": "   "})
+    ok &= check("  空分类被拒绝(400)", r.json().get("code") == 400, repr(r.json()))
+    r = client.patch(f"/api/knowledge/{cat_id}", json={"category": "x" * 65})
+    ok &= check("  超长分类被拒绝(400)", r.json().get("code") == 400, repr(r.json()))
+    r = client.patch("/api/knowledge/NONEXIST", json={"category": "crops"})
+    ok &= check("  不存在文档改分类返回 404", r.json().get("code") == 404, repr(r.json()))
+
+    r = client.delete(f"/api/knowledge/{cat_id}")
+    ok &= check("  分类测试文档可删除", r.json().get("code") == 200, repr(r.json()))
+    ok &= check(
+        "  删除后检索测试不再命中（同步生效）",
+        all(d["doc_id"] != cat_id for d in _find_doc("草莓种植要点")),
+    )
+    if os.path.isfile(cat_path):
+        os.remove(cat_path)
+
+    # ---- Word/PPT 支持：解析 / 分段检索 / 预览 / 下载 ----
+    try:
+        import docx  # noqa: F401
+        import pptx  # noqa: F401
+    except ImportError as exc:
+        print(f"SKIP docx/pptx checks（缺解析库）：{exc}")
+        has_office = False
+    else:
+        has_office = True
+
+    if has_office:
+        from docx import Document
+        from pptx import Presentation
+
+        # 生成临时 .docx / .pptx 夹具（含唯一关键词）
+        docx_path = os.path.join(_SMOKE_KB, "冒烟测试Word.docx")
+        d = Document()
+        d.add_paragraph("冒烟测试Word文档关键词")
+        d.add_paragraph("水稻稻瘟病防治要点（来自 Word 文档）")
+        d.save(docx_path)
+
+        prs = Presentation()
+        layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
+        slide = prs.slides.add_slide(layout)
+        tf = slide.shapes.add_textbox(0, 0, 9144000, 914400).text_frame
+        tf.text = "冒烟测试PPT关键词"
+        tf.add_paragraph().text = "番茄早疫病的识别与防治（来自 PPT 文档）"
+        pptx_path = os.path.join(_SMOKE_KB, "冒烟测试PPT.pptx")
+        prs.save(pptx_path)
+
+        for fname, keyword, fmt in [
+            ("冒烟测试Word.docx", "冒烟测试Word文档关键词", "docx"),
+            ("冒烟测试PPT.pptx", "冒烟测试PPT关键词", "pptx"),
+        ]:
+            path = os.path.join(_SMOKE_KB, fname)
+            with open(path, "rb") as f:
+                r = client.post(
+                    "/api/knowledge/upload",
+                    files={"file": (fname, f, "application/octet-stream")},
+                )
+            up = r.json()
+            ok &= check(
+                f"上传 {fmt} 成功",
+                up.get("code") == 200 and up["data"].get("doc_id"),
+                repr(up),
+            )
+            fid = up["data"]["doc_id"]
+            r = client.get("/api/knowledge/search", params={"q": keyword})
+            hits = r.json().get("data", {}).get("results", [])
+            hit = next((x for x in hits if x["doc_id"] == fid), None)
+            ok &= check(
+                f"{fmt} 分段检索命中（含 chunks）",
+                hit is not None and len(hit.get("chunks", [])) >= 1,
+                repr(hit),
+            )
+            r = client.get(f"/api/knowledge/{fid}/content")
+            body = r.json().get("data", {})
+            ok &= check(
+                f"{fmt} 内容预览（format + 提取文本）",
+                r.json().get("code") == 200
+                and body.get("format") == fmt
+                and keyword in body.get("content", ""),
+                repr(body)[:200],
+            )
+            r = client.get(f"/api/knowledge/{fid}/download")
+            cd = r.headers.get("content-disposition", "")
+            ok &= check(
+                f"{fmt} 下载原始文件",
+                r.status_code == 200 and "attachment" in cd and "filename" in cd,
+                cd[:120],
+            )
+            r = client.delete(f"/api/knowledge/{fid}")
+            ok &= check(f"{fmt} 上传后可删除", r.json().get("code") == 200, repr(r.json()))
+            if os.path.isfile(path):
+                os.remove(path)
+
+    # 旧格式 .doc 拒绝并提示转换
+    r = client.post(
+        "/api/knowledge/upload",
+        files={"file": ("旧格式.doc", b"\xd0\xcf\xd2\xc2 not a real doc", "application/msword")},
+    )
+    msg = r.json().get("message", "")
+    ok &= check(".doc 旧格式被拒绝并提示转换", r.json().get("code") == 400 and ".docx" in msg, msg)
+
     r = client.get("/api/sessions")
     sessions = r.json()["data"]["sessions"]
     ok &= check(

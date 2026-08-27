@@ -66,8 +66,20 @@ export interface KnowledgeDoc {
   status?: string // indexed | indexing | failed
   chunk_count?: number
   file_size?: number
+  format?: string // md | txt | docx | pptx
   created_at?: string | null
   updated_at?: string | null
+}
+
+/** 文档内容（预览页使用）：content 为按格式提取后的文本。 */
+export interface DocContent {
+  doc_id: string
+  title: string
+  source: string
+  file_name: string
+  category: string
+  format: string // md | txt | docx | pptx
+  content: string
 }
 
 /** 检索结果中的单个命中片段。 */

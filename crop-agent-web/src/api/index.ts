@@ -97,6 +97,9 @@ export const api = {
   deleteKnowledge(docId: string) {
     return http.delete<ApiResponse>(`/api/knowledge/${docId}`)
   },
+  updateKnowledgeCategory(docId: string, category: string) {
+    return http.patch<ApiResponse>(`/api/knowledge/${docId}`, { category })
+  },
   reindexKnowledge(docId: string) {
     return http.post<ApiResponse>(`/api/knowledge/${docId}/reindex`)
   },
@@ -108,5 +111,9 @@ export const api = {
   },
   deleteChunk(chunkId: string) {
     return http.delete<ApiResponse>(`/api/knowledge/chunks/${chunkId}`)
+  },
+  /** 下载文档原始文件（同源直接走浏览器下载，无需鉴权头）。 */
+  downloadKnowledge(docId: string) {
+    window.open(`/api/knowledge/${docId}/download`)
   },
 }

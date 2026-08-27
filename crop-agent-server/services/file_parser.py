@@ -16,6 +16,8 @@ def extract_file_text(name: str, data: bytes) -> str:
             return _extract_pdf(data)
         if ext == "docx":
             return _extract_docx(data)
+        if ext == "pptx":
+            return _extract_pptx(data)
         if ext in ("xlsx", "xlsm"):
             return _extract_xlsx(data)
         return f"[暂不支持解析该文件类型：{ext or 'unknown'}]"
@@ -55,6 +57,36 @@ def _extract_docx(data: bytes) -> str:
             if cells:
                 parts.append(" | ".join(cells))
     return "\n".join(parts) or "[Word 文档未提取到文本]"
+
+
+def _extract_pptx(data: bytes) -> str:
+    """PPT(.pptx)：逐页提取文本框与表格文本；页间以 `--- 第 N 页 ---` 分隔。"""
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return "[未安装 python-pptx 解析库，无法提取 PPT 文本]"
+    prs = Presentation(io.BytesIO(data))
+    slides: list[str] = []
+    for i, slide in enumerate(prs.slides, start=1):
+        parts: list[str] = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                text = "\n".join(
+                    p.text for p in shape.text_frame.paragraphs if p.text and p.text.strip()
+                ).strip()
+                if text:
+                    parts.append(text)
+            elif getattr(shape, "has_table", False) and shape.has_table:
+                rows: list[str] = []
+                for row in shape.table.rows:
+                    cells = [c.text.strip() for c in row.cells if c.text and c.text.strip()]
+                    if cells:
+                        rows.append(" | ".join(cells))
+                if rows:
+                    parts.append("\n".join(rows))
+        if parts:
+            slides.append(f"--- 第 {i} 页 ---\n" + "\n".join(parts))
+    return "\n\n".join(slides) or "[PPT 未提取到文本]"
 
 
 def _extract_xlsx(data: bytes) -> str:

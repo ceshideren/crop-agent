@@ -25,6 +25,12 @@ const routes = [
     component: () => import('../views/KnowledgeBase.vue'),
     meta: { title: '知识库' },
   },
+  {
+    path: '/knowledge/preview/:docId',
+    name: 'knowledge-preview',
+    component: () => import('../views/KnowledgePreview.vue'),
+    meta: { title: '文档预览' },
+  },
 ]
 
 const router = createRouter({

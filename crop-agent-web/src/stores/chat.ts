@@ -111,10 +111,11 @@ export const useChatStore = defineStore('chat', () => {
    *  - 历史记录存在空对话（message_count === 0 且未分组）时：
    *      · 第一次点「新建对话」→ 复用该空对话（进入它，不新增条目）；
    *      · 已被复用过的同一空对话再次触发 → 禁止新建并提示
-   *        「已存在未使用的空对话，请先使用或清理后再新建」（grouping 防叠加）；
+   *        「已存在未使用的空对话，请先使用或清理后再新建」；
    *  - 空对话被使用（发出首条消息）/ 删除 / 移入分组后，lastReusedEmptyId 自然失效，
    *    之后可再次正常新建；
-   *  - creatingSession 防重入：单次操作内最多处理一次，不重复弹窗、不重复请求。
+   *  - creatingSession 防重入：单次操作内最多处理一次，不重复弹窗、不重复请求；
+   *  - 提示带 grouping 合并为单条，重复次数角标由全局样式隐藏（不显示 ×N）。
    * 任一成功路径返回 true，由调用方负责跳转到对话页。
    */
   const creatingSession = ref(false)
@@ -137,8 +138,7 @@ export const useChatStore = defineStore('chat', () => {
         if (empty.session_id === lastReusedEmptyId.value) {
           ElMessage.warning({
             message: '已存在未使用的空对话，请先使用或清理后再新建',
-            grouping: true, // 连点不叠加弹窗
-            // showClose:true,
+            grouping: true,
           })
           return false // 禁止创建，不跳转
         }

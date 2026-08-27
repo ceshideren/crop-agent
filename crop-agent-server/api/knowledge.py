@@ -1,7 +1,9 @@
-"""知识库路由（/api/knowledge）：检索、元信息列表、上传、预览、删除、重建索引。"""
+"""知识库路由（/api/knowledge）：检索、元信息列表、上传、预览、下载、删除、重建索引。"""
+import mimetypes
 import os
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -9,12 +11,20 @@ from agent.registry import get_agent
 from db.database import get_db
 from db.models import KnowledgeMeta, utc_iso
 from db.schemas import ApiResponse
+from services.file_parser import extract_file_text
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+
+# 上传允许的扩展名（.doc/.ppt 旧格式需先另存为 .docx/.pptx）
+ALLOWED_EXTS = (".md", ".txt", ".docx", ".pptx")
 
 
 class BatchRequest(BaseModel):
     doc_ids: list[str]
+
+
+class CategoryUpdate(BaseModel):
+    category: str
 
 
 def _doc_payload(row: KnowledgeMeta) -> dict:
@@ -113,8 +123,11 @@ def list_knowledge(db: Session = Depends(get_db)):
 @router.post("/upload", response_model=ApiResponse)
 async def upload_knowledge(file: UploadFile = File(...)):
     agent = get_agent()
-    if not file.filename.lower().endswith((".md", ".txt")):
-        return ApiResponse.fail("仅支持 .md / .txt 文档", code=400)
+    if not file.filename.lower().endswith(ALLOWED_EXTS):
+        return ApiResponse.fail(
+            "仅支持 .md / .txt / .docx / .pptx 文档（.doc/.ppt 旧格式请先另存为新格式）",
+            code=400,
+        )
     safe_name = os.path.basename(file.filename)
     dest = os.path.join(agent.knowledge_dir, safe_name)
     os.makedirs(agent.knowledge_dir, exist_ok=True)
@@ -166,14 +179,43 @@ def get_doc_content(doc_id: str, db: Session = Depends(get_db)):
         return ApiResponse.fail(f"文档不存在：{doc_id}", code=404)
     if not row.source or not os.path.isfile(row.source):
         return ApiResponse.fail("源文件缺失，无法预览", code=404)
+    file_name = os.path.basename(row.source)
+    ext = os.path.splitext(file_name)[1].lower()
     try:
-        with open(row.source, "r", encoding="utf-8") as f:
-            content = f.read()
+        if ext in (".md", ".txt"):
+            with open(row.source, "r", encoding="utf-8") as f:
+                content = f.read()
+        elif ext in (".docx", ".pptx"):
+            with open(row.source, "rb") as f:
+                content = extract_file_text(file_name, f.read())
+        else:
+            content = ""
     except OSError as exc:
         return ApiResponse.fail(f"读取源文件失败：{exc}", code=500)
     return ApiResponse.ok(
-        {"doc_id": doc_id, "title": row.title, "source": row.source, "content": content}
+        {
+            "doc_id": doc_id,
+            "title": row.title,
+            "source": row.source,
+            "file_name": file_name,
+            "category": row.category or "",
+            "format": ext.lstrip(".") or "txt",
+            "content": content,
+        }
     )
+
+
+@router.get("/{doc_id}/download")
+def download_knowledge(doc_id: str, db: Session = Depends(get_db)):
+    """下载文档原始文件（FileResponse 直出，中文文件名由 Starlette 编码）。"""
+    row = db.get(KnowledgeMeta, doc_id)
+    if row is None:
+        return ApiResponse.fail(f"文档不存在：{doc_id}", code=404)
+    if not row.source or not os.path.isfile(row.source):
+        return ApiResponse.fail("源文件缺失，无法下载", code=404)
+    file_name = os.path.basename(row.source)
+    media_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+    return FileResponse(row.source, filename=file_name, media_type=media_type)
 
 
 @router.delete("/{doc_id}", response_model=ApiResponse)
@@ -184,6 +226,24 @@ def delete_knowledge(doc_id: str):
     except KeyError as exc:
         return ApiResponse.fail(str(exc), code=404)
     return ApiResponse.ok({"deleted": doc_id})
+
+
+@router.patch("/{doc_id}", response_model=ApiResponse)
+def update_knowledge_category(
+    doc_id: str, req: CategoryUpdate, db: Session = Depends(get_db)
+):
+    """修改文档分类：同步向量元数据与 DB 行（供检索测试分类过滤即时生效）。"""
+    category = (req.category or "").strip()
+    if not category:
+        return ApiResponse.fail("分类不能为空", code=400)
+    if len(category) > 64:
+        return ApiResponse.fail("分类名称过长（最多 64 字符）", code=400)
+    agent = get_agent()
+    try:
+        agent.update_doc_category(doc_id, category)
+    except KeyError as exc:
+        return ApiResponse.fail(str(exc), code=404)
+    return ApiResponse.ok({"doc_id": doc_id, "category": category})
 
 
 @router.post("/{doc_id}/reindex", response_model=ApiResponse)
