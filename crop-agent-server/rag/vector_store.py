@@ -1,6 +1,12 @@
-"""向量库封装：优先 ChromaDB（PersistentClient，cosine 空间），不可用时降级为内存实现。"""
+"""向量库封装：优先 ChromaDB（PersistentClient，cosine 空间），不可用时降级为内存实现。
+
+两个 store 均维护一个 BM25 词法索引（rag.bm25.BM25Index），
+在 add/delete/clear 时同步，供混合检索（向量 + 词法 + RRF）使用。
+"""
 import os
 from typing import List, Optional
+
+from rag.bm25 import BM25Index
 
 
 def _cosine(a: list, b: list) -> float:
@@ -23,6 +29,7 @@ class MemoryStore:
         self._embeddings: list = []
         self._documents: list = []
         self._metadatas: list = []
+        self._lex = BM25Index()
 
     def add(self, ids, embeddings, documents, metadatas) -> None:
         # upsert 语义：同名 id 覆盖（上传同名文件时向量不重复）
@@ -37,6 +44,7 @@ class MemoryStore:
             self._embeddings.append(e)
             self._documents.append(d)
             self._metadatas.append(m or {})
+        self._lex.add(ids, documents)
 
     def query(self, embedding, top_k=5) -> list:
         scored = [
@@ -53,9 +61,11 @@ class MemoryStore:
 
     def clear(self) -> None:
         self._ids, self._embeddings, self._documents, self._metadatas = [], [], [], []
+        self._lex.clear()
 
     def delete_by_meta(self, where: dict) -> int:
         """按元数据等值匹配删除，返回删除条数。"""
+        old_ids = list(self._ids)
         keep = [
             (i, e, d, m)
             for i, e, d, m in zip(
@@ -63,11 +73,14 @@ class MemoryStore:
             )
             if not _meta_match(m or {}, where)
         ]
-        removed = len(self._ids) - len(keep)
+        removed = len(old_ids) - len(keep)
         self._ids = [x[0] for x in keep]
         self._embeddings = [x[1] for x in keep]
         self._documents = [x[2] for x in keep]
         self._metadatas = [x[3] for x in keep]
+        if removed:
+            keep_ids = {x[0] for x in keep}
+            self._lex.remove([i for i in old_ids if i not in keep_ids])
         return removed
 
     def delete(self, ids: list) -> int:
@@ -85,7 +98,22 @@ class MemoryStore:
         self._embeddings = [x[1] for x in keep]
         self._documents = [x[2] for x in keep]
         self._metadatas = [x[3] for x in keep]
+        if removed:
+            self._lex.remove(ids)
         return removed
+
+    def get_by_ids(self, ids: list) -> list:
+        """按 id 列表返回 [(id, doc, meta)]，保持传入顺序，缺失的跳过。"""
+        out = []
+        for cid in ids or []:
+            if cid in self._ids:
+                i = self._ids.index(cid)
+                out.append((cid, self._documents[i], self._metadatas[i] or {}))
+        return out
+
+    def lexical_search(self, query: str, top_k: int = 20) -> list:
+        """BM25 词法召回：返回 [(chunk_id, bm25_score)]，按得分降序。"""
+        return self._lex.search(query, top_k)
 
     def get_by_meta(self, where: dict) -> list:
         """按元数据等值匹配返回 [(id, doc, meta)]，保持插入顺序。"""
@@ -117,11 +145,22 @@ class ChromaStore:
         self._col = self._client.get_or_create_collection(
             name=collection_name, metadata={"hnsw:space": "cosine"}
         )
+        # 词法索引：启动时从已有文档全量构建（知识库规模小，成本可忽略）
+        self._lex = BM25Index()
+        try:
+            res = self._col.get(include=["documents"])
+            ids = res.get("ids", []) or []
+            docs = res.get("documents", []) or []
+            if ids:
+                self._lex.add(ids, docs)
+        except Exception:
+            pass
 
     def add(self, ids, embeddings, documents, metadatas) -> None:
         self._col.upsert(
             ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas
         )
+        self._lex.add(ids, documents)
 
     def query(self, embedding, top_k=5) -> list:
         res = self._col.query(query_embeddings=[embedding], n_results=top_k)
@@ -142,6 +181,7 @@ class ChromaStore:
             self._col.delete(where={})
         except Exception:
             pass
+        self._lex.clear()
 
     def delete_by_meta(self, where: dict) -> int:
         """按元数据等值匹配删除，返回删除条数。"""
@@ -151,6 +191,7 @@ class ChromaStore:
             ids = []
         if ids:
             self._col.delete(ids=ids)
+            self._lex.remove(ids)
         return len(ids)
 
     def delete(self, ids: list) -> int:
@@ -158,7 +199,26 @@ class ChromaStore:
         if not ids:
             return 0
         self._col.delete(ids=list(ids))
+        self._lex.remove(ids)
         return len(ids)
+
+    def get_by_ids(self, ids: list) -> list:
+        """按 id 列表返回 [(id, doc, meta)]，保持传入顺序，缺失的跳过。"""
+        if not ids:
+            return []
+        res = self._col.get(ids=list(ids), include=["documents", "metadatas"])
+        out = []
+        for cid, doc, meta in zip(
+            res.get("ids", []),
+            res.get("documents", []),
+            res.get("metadatas", []),
+        ):
+            out.append((cid, doc, meta or {}))
+        return out
+
+    def lexical_search(self, query: str, top_k: int = 20) -> list:
+        """BM25 词法召回：返回 [(chunk_id, bm25_score)]，按得分降序。"""
+        return self._lex.search(query, top_k)
 
     def get_by_meta(self, where: dict) -> list:
         """按元数据等值匹配返回 [(id, doc, meta)]。"""

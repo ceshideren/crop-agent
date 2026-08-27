@@ -12,6 +12,7 @@ from config import get_settings
 from db.database import SessionLocal, init_db
 from multimodal.image_analyzer import ImageAnalyzer
 from rag.embeddings import get_embedder
+from rag.rerank import build_reranker
 from rag.retriever import Retriever
 from rag.vector_store import get_vector_store
 from services.llm import LLMClient
@@ -46,6 +47,8 @@ async def lifespan(app: FastAPI):
 
     embedder = get_embedder()
     store = get_vector_store(_resolve(settings.vector_persist_dir))
+    llm = LLMClient(settings)
+    reranker = build_reranker(settings.reranker, llm, settings.rerank_k)
     retriever = Retriever(
         store,
         embedder,
@@ -53,9 +56,14 @@ async def lifespan(app: FastAPI):
         settings.similarity_threshold,
         settings.recall_k,
         settings.hybrid_search,
+        settings.hybrid_k,
+        settings.bm25_weight,
+        settings.vector_weight,
+        settings.lexical_min,
+        settings.rerank_k,
+        reranker,
     )
     analyzer = ImageAnalyzer(settings)
-    llm = LLMClient(settings)
     agent = CropAgent(
         retriever=retriever,
         analyzer=analyzer,

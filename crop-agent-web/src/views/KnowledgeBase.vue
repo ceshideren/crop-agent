@@ -20,10 +20,15 @@ function catInfo(cat: string) {
   return CATEGORY_MAP[cat] || { label: '其他', cls: 'cat-other' }
 }
 
-function relevanceOf(score: number): { label: string; cls: string } {
-  if (score >= 0.8) return { label: '高相关', cls: 'rel-high' }
-  if (score >= 0.5) return { label: '相关', cls: 'rel-mid' }
-  return { label: '低相关', cls: 'rel-low' }
+// 相关性等级由后端下发（阈值与嵌入器量纲绑定，前端比分数会失准）
+const RELEVANCE_MAP: Record<string, { label: string; cls: string }> = {
+  high: { label: '高相关', cls: 'rel-high' },
+  mid: { label: '相关', cls: 'rel-mid' },
+  low: { label: '低相关', cls: 'rel-low' },
+}
+
+function relevanceOf(relevance?: string): { label: string; cls: string } {
+  return RELEVANCE_MAP[relevance || ''] || { label: '低相关', cls: 'rel-low' }
 }
 
 function formatSize(bytes: number): string {
@@ -84,9 +89,10 @@ const upload = ref({ active: false, phase: 'upload' as 'upload' | 'parsing', per
 
 /* ---------------- 检索结果分级 ---------------- */
 
-const highResults = computed(() => results.value.filter((d) => d.score >= 0.8))
-const midResults = computed(() => results.value.filter((d) => d.score >= 0.5 && d.score < 0.8))
-const lowResults = computed(() => results.value.filter((d) => d.score >= 0.3 && d.score < 0.5))
+// 分级依据后端下发的 relevance 标签；none 视为不相关，不展示
+const highResults = computed(() => results.value.filter((d) => d.relevance === 'high'))
+const midResults = computed(() => results.value.filter((d) => d.relevance === 'mid'))
+const lowResults = computed(() => results.value.filter((d) => d.relevance === 'low'))
 const visibleResults = computed(() => [...highResults.value, ...midResults.value, ...lowResults.value])
 
 const stats = computed(() => {
@@ -514,11 +520,11 @@ onMounted(loadDocs)
               <span class="result-meta">
                 <el-tag
                   class="rel-tag"
-                  :class="relevanceOf(d.score).cls"
+                  :class="relevanceOf(d.relevance).cls"
                   size="small"
                   effect="light"
                 >
-                  {{ relevanceOf(d.score).label }}
+                  {{ relevanceOf(d.relevance).label }}
                 </el-tag>
                 <span class="num result-score">{{ d.score.toFixed(3) }}</span>
               </span>
@@ -567,11 +573,11 @@ onMounted(loadDocs)
                   <span class="result-meta">
                     <el-tag
                       class="rel-tag"
-                      :class="relevanceOf(d.score).cls"
+                      :class="relevanceOf(d.relevance).cls"
                       size="small"
                       effect="light"
                     >
-                      {{ relevanceOf(d.score).label }}
+                      {{ relevanceOf(d.relevance).label }}
                     </el-tag>
                     <span class="num result-score">{{ d.score.toFixed(3) }}</span>
                   </span>

@@ -1,9 +1,10 @@
-"""Agent 编排：意图路由 → 工具调用 → 回答生成 → 会话落库。"""
+"""Agent 编排：意图路由 → 查询改写 → 工具调用 → 回答生成 → 会话落库。"""
 import os
 import uuid
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from agent.query_rewriter import QueryRewriter
 from multimodal.crop_classifier import classify_crop
 from services.answer_engine import build_fallback_answer
 from services.tracing import traceable
@@ -32,6 +33,7 @@ class CropAgent:
         self.settings = settings
         self.chunk_size = settings.chunk_size
         self.chunk_overlap = settings.chunk_overlap
+        self.rewriter = QueryRewriter(llm, settings)
 
     # ---- 会话与消息 ----
     def _ensure_session(self, session_id: Optional[str], first_content: str = "") -> str:
@@ -166,8 +168,13 @@ class CropAgent:
             vision = await self.analyzer.analyze(images[0], task=task)
             tool_calls.append(f"image:{task}")
 
-        query = self._build_query(llm_content, vision)
-        hits = self.retriever.search(query)
+        # 文本部分（原文 + 作物标签）先做 LLM 改写，图片描述不参与改写（避免事实被改写）
+        query = self._build_query(llm_content, None)
+        if self.rewriter.enabled(query):
+            query = await self.rewriter.rewrite(query)
+        if vision and vision.description:
+            query = (query + " " + vision.description).strip()
+        hits = await self.retriever.search(query)
         tool_calls.append("search_knowledge_base")
 
         if self.llm.available:

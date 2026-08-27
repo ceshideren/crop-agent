@@ -21,6 +21,8 @@ sys.path.insert(0, _SERVER_ROOT)
 os.environ["DB_URL"] = "sqlite:///:memory:"
 os.environ["VECTOR_PERSIST_DIR"] = "./storage/smoke_chroma"
 os.environ["REINDEX"] = "true"
+# 冒烟测试保持确定性：关闭 LLM 查询改写（混合检索/重排不依赖网络）
+os.environ["QUERY_REWRITE"] = "false"
 
 # 知识库使用临时副本：管理类端点（删除/重建）会改文件，不能动真实 knowledge/
 import shutil  # noqa: E402
@@ -88,6 +90,50 @@ with TestClient(main.app) as client:
     ok &= check(
         "  分类过滤生效",
         all(d["category"] == "diseases" for d in r.json()["data"]["results"]),
+    )
+
+    # ---- 混合检索（向量 + BM25 + RRF）：短查询 / 分数不变式 / rewrite 参数 ----
+    r = client.get("/api/knowledge/search", params={"q": "稻瘟病", "rewrite": 0})
+    short = r.json().get("data", {}).get("results", [])
+    ok &= check(
+        "  短查询'稻瘟病'混合检索有结果",
+        r.status_code == 200 and len(short) >= 1,
+        repr([(d["doc_id"], d["score"]) for d in short]),
+    )
+    all_scores = [d["score"] for d in results] + [d["score"] for d in short]
+    ok &= check(
+        "  展示分落在 [0,1]（加权融合分：缺失源记 0，单源命中不再被抬到双命中量级）",
+        all(isinstance(s, float) and 0.0 <= s <= 1.0 for s in all_scores),
+        repr(sorted(all_scores)),
+    )
+    ok &= check(
+        "  结果附带后端判定的相关性等级",
+        all(d.get("relevance") in ("high", "mid", "low", "none") for d in results),
+        repr([(d["title"], d["score"], d.get("relevance")) for d in results[:3]]),
+    )
+
+    # 回归：逐字命中必须压过零星共字命中。曾因双命中片段的 BM25 分被静默丢弃，
+    # 使向量分低到被阈值挡住、因而独占 BM25 分的《小麦》片段排到西瓜原文之前。
+    melon_q = (
+        "常见西瓜品种及特点 西瓜品种繁多，种植户应根据市场需求和当地气候条件"
+        "选择合适的品种："
+    )
+    melon = client.get(
+        "/api/knowledge/search", params={"q": melon_q, "rewrite": 0}
+    ).json()["data"]["results"]
+    if any("西瓜" in d["title"] for d in melon):
+        ok &= check(
+            "  西瓜原文查询：逐字命中排第一且判为高相关",
+            "西瓜" in melon[0]["title"] and melon[0].get("relevance") == "high",
+            repr([(d["title"], d["score"], d.get("relevance")) for d in melon[:3]]),
+        )
+    else:
+        print("SKIP 西瓜排序回归断言（知识库无该文档，可能缺 python-docx）")
+    r = client.get("/api/knowledge/search", params={"q": "番茄早疫病", "rewrite": 1})
+    ok &= check(
+        "  rewrite=1 参数不报错",
+        r.status_code == 200,
+        repr(r.json().get("message", "")),
     )
 
     r = client.get("/api/knowledge")

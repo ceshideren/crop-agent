@@ -1,6 +1,7 @@
 """知识库路由（/api/knowledge）：检索、元信息列表、上传、预览、下载、删除、重建索引。"""
 import mimetypes
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import FileResponse
@@ -62,6 +63,7 @@ def _enrich_docs(docs, db: Session) -> list:
             "source": d.source,
             "file_name": os.path.basename(d.source) if d.source else "",
             "score": d.score,
+            "relevance": d.relevance,
             "chunks": [
                 {
                     "chunk_id": c.chunk_id,
@@ -82,14 +84,24 @@ def _enrich_docs(docs, db: Session) -> list:
 
 
 @router.get("/search", response_model=ApiResponse)
-def search_knowledge(
-    q: str, category: str = "", db: Session = Depends(get_db)
+async def search_knowledge(
+    q: str,
+    category: str = "",
+    rewrite: Optional[bool] = None,
+    db: Session = Depends(get_db),
 ):
     agent = get_agent()
-    docs = agent.retriever.search_docs(q, category=category or None)
+    # rewrite 显式传 0/1 覆盖配置；默认走 settings.query_rewrite（LLM 不可用时自动跳过）
+    query = q
+    if rewrite is None:
+        rewrite = agent.settings.query_rewrite
+    if rewrite and agent.rewriter.enabled(query):
+        query = await agent.rewriter.rewrite(query)
+    docs = await agent.retriever.search_docs(query, category=category or None)
     results = _enrich_docs(docs, db)
     total_chunks = sum(len(d["chunks"]) for d in results)
-    high = sum(1 for d in results if d["score"] >= 0.8)
+    high = sum(1 for d in results if d["relevance"] == "high")
+    s = agent.settings
     return ApiResponse.ok(
         {
             "results": results,
@@ -99,6 +111,12 @@ def search_knowledge(
                 "doc_count": len(results),
                 "total_chunks": total_chunks,
                 "high": high,
+                # 分级契约：前端按 relevance 标签分组，阈值仅供展示说明
+                "relevance_bands": {
+                    "high": s.relevance_high,
+                    "mid": s.relevance_mid,
+                    "low": s.relevance_low,
+                },
             },
         }
     )

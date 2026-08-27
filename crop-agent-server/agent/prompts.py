@@ -30,13 +30,44 @@ SYSTEM_PROMPT = """你是「禾知」—— 一位专业的农作物智能科普
 """
 
 
+_REL_LABEL = {"high": "高相关", "mid": "相关", "low": "低相关", "none": "弱相关"}
+
+
 def build_context_prompt(hits) -> str:
-    """把检索命中片段拼成供 LLM 参考的上下文。"""
+    """把检索命中片段拼成供 LLM 参考的上下文。
+
+    标注相关度等级而非裸分数：分数是向量与词法的融合度（非余弦相似度），
+    等级口径与知识库界面一致，便于模型按 SYSTEM_PROMPT 判断该不该基于片段作答。
+    """
+    from rag.retriever import relevance_of  # 惰性导入，避免 prompts 反向依赖检索层
+
     if not hits:
         return "（未检索到相关知识库片段）"
     lines = ["以下是知识库检索到的片段："]
     for h in hits[:5]:
+        rel = _REL_LABEL.get(relevance_of(h.score), "弱相关")
         lines.append(
-            f"- [{h.source_label}]（{h.title}，相似度 {h.score}）：{h.text[:400]}"
+            f"- [{h.source_label}]（{h.title}，{rel} {h.score}）：{h.text[:400]}"
         )
     return "\n".join(lines)
+
+
+REWRITE_PROMPT = """你是农业知识库的检索查询改写助手。用户会给出一个简短的农业问题或词条，请把它改写为一条语义更完整、更适合向量检索的查询语句（补充意图与上下文，如症状识别、发病条件、防治方法、种植技术等）。
+
+要求：
+- 只输出改写后的查询语句本身，不要解释、不要加引号、不要输出多余内容；
+- 保留原词条，仅做扩展；
+- 输出长度控制在 30-60 字。
+
+示例：
+用户：稻瘟病
+输出：稻瘟病症状识别、发病条件与防治方法
+"""
+
+RERANK_PROMPT = """你是农业知识库检索结果的重排助手。给定一个查询和若干候选片段，请按与查询的相关度从高到低对片段排序。
+
+要求：
+- 只输出 JSON：{"ranking": ["片段ID按相关度从高到低排列"]}
+- 片段ID必须是候选列表中出现的完整 ID（形如 K5BB418#chunk_01），不得编造；
+- 不要输出其他内容。
+"""

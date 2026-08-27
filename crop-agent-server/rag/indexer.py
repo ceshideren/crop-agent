@@ -2,7 +2,7 @@
 import hashlib
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List
 
@@ -17,6 +17,7 @@ class DocChunk:
     text: str
     file_size: int = 0
     updated_at: datetime | None = None
+    tags: list = field(default_factory=list)
 
 
 def _read_text(path: str) -> str:
@@ -118,6 +119,18 @@ def _doc_id(path: str) -> str:
     return "K" + hashlib.md5(path.encode("utf-8")).hexdigest()[:6].upper()
 
 
+# 规则标签关键词（与 agent 意图词表同源，离线、确定性；meta_tagging=True 时可再叠加 LLM 标签）
+_DISEASE_KW = ["病", "瘟", "疫", "锈", "枯", "霉", "斑", "虫害", "病害", "真菌", "细菌", "病毒"]
+
+
+def _chunk_tags(text: str, category: str) -> list:
+    """规则打标：分类进 tags；文本命中病害关键词时加 disease。"""
+    tags = [category] if category else []
+    if any(kw in text for kw in _DISEASE_KW):
+        tags.append("disease")
+    return sorted(set(tags))
+
+
 def split_documents(docs: List[dict], chunk_size: int, overlap: int) -> List[DocChunk]:
     chunks: List[DocChunk] = []
     for d in docs:
@@ -134,6 +147,7 @@ def split_documents(docs: List[dict], chunk_size: int, overlap: int) -> List[Doc
                     text=text,
                     file_size=size,
                     updated_at=mtime,
+                    tags=_chunk_tags(text, d["category"]),
                 )
             )
     return chunks
@@ -145,7 +159,7 @@ def split_document(doc: dict, chunk_size: int, overlap: int) -> List[DocChunk]:
 
 
 def _doc_meta(chunks: List[DocChunk]) -> List[dict]:
-    """chunk 列表 → knowledge_meta 列表（含分类 / 文件大小 / 更新时间）。"""
+    """chunk 列表 → knowledge_meta 列表（含分类 / 文件大小 / 更新时间 / 标签）。"""
     meta_map = {}
     for c in chunks:
         m = meta_map.setdefault(
@@ -158,6 +172,7 @@ def _doc_meta(chunks: List[DocChunk]) -> List[dict]:
                 "chunk_count": 0,
                 "file_size": c.file_size,
                 "updated_at": c.updated_at,
+                "tags": [],
             },
         )
         m["chunk_count"] += 1
@@ -165,6 +180,7 @@ def _doc_meta(chunks: List[DocChunk]) -> List[dict]:
             m["file_size"] = c.file_size
         if c.updated_at:
             m["updated_at"] = c.updated_at
+        m["tags"] = sorted(set(m["tags"]) | set(c.tags))
     return list(meta_map.values())
 
 
@@ -185,6 +201,7 @@ def build_index(knowledge_dir: str, store, embedder, chunk_size=512, overlap=64)
             "source": c.source,
             "category": c.category,
             "chunk_index": c.chunk_index,
+            "tags": c.tags,
         }
         for c in chunks
     ]
@@ -210,6 +227,7 @@ def build_doc_index(path: str, store, embedder, chunk_size=512, overlap=64):
             "source": c.source,
             "category": c.category,
             "chunk_index": c.chunk_index,
+            "tags": c.tags,
         }
         for c in chunks
     ]

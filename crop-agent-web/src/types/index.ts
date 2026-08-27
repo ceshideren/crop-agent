@@ -99,6 +99,8 @@ export interface SearchResultDoc {
   file_name: string
   status: string
   score: number
+  /** 相关性等级，由后端按展示分量纲判定（high/mid/low/none），前端不再自行比阈值。 */
+  relevance?: 'high' | 'mid' | 'low' | 'none'
   chunks: SearchChunk[]
   updated_at?: string | null
   file_size?: number
