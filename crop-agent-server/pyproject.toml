@@ -1,0 +1,53 @@
+[project]
+name = "crop-agent-server"
+version = "0.1.0"
+description = "禾知 · 农作物多模态 RAG Agent 后端（FastAPI + LangChain + LlamaIndex + ChromaDB + SQLite）"
+requires-python = ">=3.12"
+dependencies = [
+    # ===== Agent & RAG =====
+    "langchain>=0.2",
+    "langchain-core>=0.2",
+    "llama-index>=0.11",
+    "llama-index-core>=0.11",
+    # ===== 向量数据库 =====
+    "chromadb>=0.5",
+    # ===== 关系型存储 =====
+    "sqlalchemy>=2.0",
+    "aiosqlite",
+    "alembic",
+    # ===== API =====
+    "fastapi>=0.111",
+    "uvicorn[standard]",
+    "websockets",
+    # ===== 配置与校验 =====
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-multipart",
+    "python-dotenv",
+    # ===== HTTP 客户端（文本 / 多模态模型调用）=====
+    "httpx>=0.27",
+    # ===== 可观测性（LangSmith trace）=====
+    "langsmith>=0.1",
+    "pypdf>=6.16.1",
+    "python-docx>=1.2.0",
+    "openpyxl>=3.1.5",
+]
+
+[project.optional-dependencies]
+# 真实文本生成 & 多模态模型（缺省时自动降级为本地模板引擎）
+deepseek = ["deepseek"]
+# 本地图片元信息分析（缺省时跳过颜色估计）
+image = ["pillow>=10.0"]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+# 注：mimo-sdk 为私有包（不在公共 PyPI），未列入可选组。
+# 需要 mimo-2.5 多模态模型时，用私有源添加：
+#   uv add --optional mimo "mimo-sdk" --index <私有源URL>
+# 之后安装：uv sync --extra mimo
+
+[tool.uv]
+# 扁平布局应用（main.py 在项目根），非可安装包，禁止构建/安装项目本身
+package = false

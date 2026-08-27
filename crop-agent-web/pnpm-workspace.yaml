@@ -1,0 +1,5 @@
+allowBuilds:
+  '@parcel/watcher': false
+  esbuild: true
+  vue-demi: true
+storeDir: E:\.pnpm-store\v11

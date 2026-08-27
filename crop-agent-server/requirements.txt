@@ -1,0 +1,43 @@
+# ============================================================
+# 注意：本项目的 Python 依赖已迁移至 pyproject.toml（uv sync 工作流）。
+# 本文件仅作为不使用 uv 时的兼容安装入口（pip install -r requirements.txt），
+# 仅含核心依赖。可选依赖（deepseek / mimo-sdk / pillow）见 pyproject.toml
+# 的 [project.optional-dependencies]，uv 安装命令：uv sync --extra <name>。
+# ============================================================
+# ===== Agent & RAG =====
+langchain>=0.2
+langchain-core>=0.2
+llama-index>=0.11
+llama-index-core>=0.11
+
+# ===== 向量数据库 =====
+chromadb>=0.5
+
+# ===== 关系型存储 =====
+sqlalchemy>=2.0
+aiosqlite
+alembic
+
+# ===== API =====
+fastapi>=0.111
+uvicorn[standard]
+websockets
+
+# ===== 配置与校验 =====
+pydantic>=2.0
+pydantic-settings>=2.0
+python-multipart
+python-dotenv
+
+# ===== HTTP 客户端（文本 / 多模态模型调用）=====
+httpx>=0.27
+
+# ===== 可选：真实文本生成 & 多模态模型（缺省时自动降级为本地模板引擎）=====
+# deepseek          # deepseek-v4-flash 客户端
+# mimo-sdk          # mimo-2.5 客户端
+
+# ===== 可选：本地图片元信息分析（缺省时跳过颜色估计）=====
+# pillow>=10.0
+
+# ===== 可观测性（LangSmith trace）=====
+langsmith>=0.1

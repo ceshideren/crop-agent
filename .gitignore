@@ -1,0 +1,24 @@
+# 忽略 Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+crop-agent-server/storage/
+crop_smoke_*/
+crop-agent-server/_smoke_deps/
+*.db
+*.sqlite3
+
+# 忽略 Node
+node_modules/
+dist/
+.vite/
+*.local
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
